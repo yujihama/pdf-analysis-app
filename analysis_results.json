@@ -1,0 +1,323 @@
+{
+  "file_name": "3-5_jp",
+  "total_pages": 2,
+  "pages": {
+    "1": {
+      "total_regions": 12,
+      "merged_regions": 0,
+      "split_regions": 11,
+      "regions": [
+        {
+          "id": "1",
+          "bbox": {
+            "x": 497,
+            "y": 765,
+            "width": 1333,
+            "height": 461
+          },
+          "type": "その他",
+          "description": "『財務戦略』というタイトルテキスト",
+          "path": "tmp\\analysis_results\\3-5_jp\\page_1\\region_1.png",
+          "parent_id": null,
+          "split_depth": 0,
+          "merged_from": []
+        },
+        {
+          "id": "1",
+          "bbox": {
+            "x": 595,
+            "y": 1540,
+            "width": 6235,
+            "height": 178
+          },
+          "type": "その他",
+          "description": "見出し: 収益性・効率性の改善と成長投資拡大を両立し、企業価値の持続的向上を実現",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_1_2\\region_1.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": []
+        },
+        {
+          "id": "2",
+          "bbox": {
+            "x": 631,
+            "y": 1920,
+            "width": 1292,
+            "height": 1300
+          },
+          "type": "その他",
+          "description": "人物写真",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_1_2\\region_2.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": []
+        },
+        {
+          "id": "3",
+          "bbox": {
+            "x": 4261,
+            "y": 1974,
+            "width": 6605,
+            "height": 1100
+          },
+          "type": "その他",
+          "description": "本文: 2024年5月に見直した2025年度財務目標の達成と、その後の営業利益率10%及びROE10%の早期達成に向けて...",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_1_2\\region_3.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": []
+        },
+        {
+          "id": "4",
+          "bbox": {
+            "x": 2220,
+            "y": 2389,
+            "width": 1551,
+            "height": 701
+          },
+          "type": "その他",
+          "description": "役職・氏名: 常務執行役 CFO (財務戦略、経理、ファイナンス担当)、IR・SR担当 増田 邦昭",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_1_2\\region_4.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": []
+        },
+        {
+          "id": "5",
+          "bbox": {
+            "x": 6068,
+            "y": 3551,
+            "width": 5032,
+            "height": 1646
+          },
+          "type": "その他",
+          "description": "見出し: キャッシュ・ジェネレーションとキャピタル・アロケーション",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_1_2\\region_5.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": []
+        },
+        {
+          "id": "6",
+          "bbox": {
+            "x": 722,
+            "y": 3555,
+            "width": 2608,
+            "height": 174
+          },
+          "type": "その他",
+          "description": "見出し: ROICを用いたB/S経営の実践",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_1_2\\region_6.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": []
+        },
+        {
+          "id": "7",
+          "bbox": {
+            "x": 592,
+            "y": 3901,
+            "width": 5034,
+            "height": 1887
+          },
+          "type": "その他",
+          "description": "本文: これまで三菱電機グループではP/L視点の経営を重視してきましたが...",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_1_2\\region_7.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": []
+        },
+        {
+          "id": "8",
+          "bbox": {
+            "x": 8663,
+            "y": 5336,
+            "width": 2319,
+            "height": 1706
+          },
+          "type": "グラフ",
+          "description": "円グラフ: キャピタル・アロケーション (2021〜2025年度)",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_1_2\\region_8.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": []
+        },
+        {
+          "id": "9",
+          "bbox": {
+            "x": 6442,
+            "y": 5435,
+            "width": 1633,
+            "height": 1607
+          },
+          "type": "グラフ",
+          "description": "棒グラフ: キャッシュ・ジェネレーション (前中期経営計画と中期経営計画の比較)",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_1_2\\region_9.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": []
+        },
+        {
+          "id": "10",
+          "bbox": {
+            "x": 592,
+            "y": 6062,
+            "width": 5035,
+            "height": 1696
+          },
+          "type": "その他",
+          "description": "本文: ② 事業ポートフォリオ戦略推進 ③ パートナー戦略推進",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_1_2\\region_10.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": []
+        },
+        {
+          "id": "11",
+          "bbox": {
+            "x": 6069,
+            "y": 7205,
+            "width": 3909,
+            "height": 553
+          },
+          "type": "その他",
+          "description": "注釈: *1 Return On Invested Capital (投下資本利益率) *2 Balance Sheet (貸借対照表)...",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_1_2\\region_11.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": []
+        }
+      ]
+    },
+    "2": {
+      "total_regions": 7,
+      "merged_regions": 6,
+      "split_regions": 7,
+      "regions": [
+        {
+          "id": "1_1",
+          "bbox": {
+            "x": 595,
+            "y": 994,
+            "width": 5032,
+            "height": 1054
+          },
+          "type": "その他/その他",
+          "description": "見出し: 規律ある財務マネジメント\n本文: 財務戦略に関する説明",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_1\\page_2_1\\merged_region_1_1.png",
+          "parent_id": 1,
+          "split_depth": 1,
+          "merged_from": [
+            1,
+            2
+          ]
+        },
+        {
+          "id": "1_3",
+          "bbox": {
+            "x": 595,
+            "y": 2374,
+            "width": 5033,
+            "height": 2823
+          },
+          "type": "その他/その他",
+          "description": "見出し: 政策保有株式に関する方針\n本文: 政策保有株式に関する説明 + グラフ",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_1\\page_2_1\\merged_region_1_3.png",
+          "parent_id": 1,
+          "split_depth": 1,
+          "merged_from": [
+            3,
+            4
+          ]
+        },
+        {
+          "id": "1_5",
+          "bbox": {
+            "x": 595,
+            "y": 5522,
+            "width": 5033,
+            "height": 2458
+          },
+          "type": "その他/その他",
+          "description": "見出し: 利益成長と株主還元策の実行による株主総利回りの向上\n本文: 株主還元策に関する説明",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_1\\page_2_1\\merged_region_1_5.png",
+          "parent_id": 1,
+          "split_depth": 1,
+          "merged_from": [
+            5,
+            6
+          ]
+        },
+        {
+          "id": "2_1",
+          "bbox": {
+            "x": 6119,
+            "y": 1286,
+            "width": 4906,
+            "height": 2641
+          },
+          "type": "その他/グラフ",
+          "description": "配当額（円）の凡例を示すラベル\n配当額（棒グラフ）と調整後DOE（折れ線グラフ）を示すグラフ",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_2_2\\merged_region_2_1.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": [
+            1,
+            2
+          ]
+        },
+        {
+          "id": "2_4",
+          "bbox": {
+            "x": 6064,
+            "y": 4400,
+            "width": 5040,
+            "height": 784
+          },
+          "type": "表/その他",
+          "description": "株主総利回りの比較表（過去10年、5年、3年、1年）\n株主総利回りの注釈",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_2_2\\merged_region_2_4.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": [
+            4,
+            5
+          ]
+        },
+        {
+          "id": "2_6",
+          "bbox": {
+            "x": 6068,
+            "y": 5524,
+            "width": 5031,
+            "height": 2233
+          },
+          "type": "その他/その他",
+          "description": "「資本市場との対話」の見出し\n資本市場との対話に関する説明文",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_2_2\\merged_region_2_6.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": [
+            6,
+            7
+          ]
+        },
+        {
+          "id": "2_3",
+          "bbox": {
+            "x": 6517,
+            "y": 4054,
+            "width": 590,
+            "height": 94
+          },
+          "type": "その他",
+          "description": "米国会計基準のラベル",
+          "path": "tmp\\analysis_results\\3-5_jp_sub_2\\page_2_2\\region_2_3.png",
+          "parent_id": 2,
+          "split_depth": 1,
+          "merged_from": []
+        }
+      ]
+    }
+  }
+}
