@@ -1,8 +1,8 @@
-streamlit
-openai
-PyPDF2
-PyMuPDF
-Pillow
-opencv-python
-numpy
-python-dotenv
+streamlit>=1.24.0
+openai>=1.0.0
+PyPDF2>=3.0.0
+PyMuPDF>=1.22.0
+python-dotenv>=1.0.0
+Pillow>=9.5.0
+opencv-python>=4.8.0
+numpy>=1.24.0

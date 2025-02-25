@@ -43,11 +43,29 @@ if not os.path.exists(TMP_DIR):
 ######################
 # OpenAI APIキー設定 #
 ######################
-# 環境変数からAPIキーを取得
-openai.api_key = os.getenv("OPENAI_API_KEY")
-if not openai.api_key:
-    st.error("OpenAI APIキーが設定されていません。環境変数 'OPENAI_API_KEY' を設定してください。")
-    st.stop()
+# Azure OpenAI APIの設定を確認
+azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
+azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2023-05-15")
+
+# Azure OpenAI APIが設定されている場合はAzure OpenAI APIを使用
+if azure_api_key and azure_endpoint and azure_deployment:
+    logger.info("Azure OpenAI APIを使用します")
+    openai.api_type = "azure"
+    openai.api_key = azure_api_key
+    openai.api_base = azure_endpoint
+    openai.api_version = azure_api_version
+    default_model = azure_deployment
+else:
+    # 環境変数からOpenAI APIキーを取得
+    logger.info("OpenAI APIを使用します")
+    openai.api_key = os.getenv("OPENAI_API_KEY")
+    default_model = "gpt-4-vision-preview"  # デフォルトモデル
+    
+    if not openai.api_key:
+        st.error("OpenAI APIキーが設定されていません。環境変数 'OPENAI_API_KEY' を設定してください。")
+        st.stop()
 
 # NumPy型をJSON変換用にカスタマイズする関数を定義
 def numpy_to_python(obj):
@@ -62,7 +80,7 @@ def numpy_to_python(obj):
 ##############################
 # LLM呼び出しのユーティリティ #
 ##############################
-def call_gpt(prompt, image_base64_list=None, max_tokens=1500, temperature=0.0, model="chatgpt-4o-latest"):
+def call_gpt(prompt, image_base64_list=None, max_tokens=1500, temperature=0.0, model=None):
     """
     LLMを呼び出すユーティリティ関数
     Args:
@@ -70,45 +88,81 @@ def call_gpt(prompt, image_base64_list=None, max_tokens=1500, temperature=0.0, m
         image_base64_list: Base64エンコードされた画像のリスト（複数画像対応）
         max_tokens: 最大トークン数
         temperature: 温度パラメータ
-        model: 使用するモデル
+        model: 使用するモデル（Noneの場合はデフォルトモデルを使用）
     """
+    # モデルが指定されていない場合はデフォルトモデルを使用
+    if model is None:
+        model = default_model
+        
     messages = [
         {"role": "system", "content": "あなたは与えられた画像から俯瞰的な目線で正確に文書構造を読み取り、JSON形式で返してください。"}
     ]
 
     logger.info("==========call_gpt start==========")
+    logger.info(f"使用モデル: {model}")
+    
     if image_base64_list:
         # 画像が1つ以上ある場合
         logger.info(f"image_base64_list:{len(image_base64_list)}")
-        content = [{"type": "text", "text": prompt}]
-        for img_base64 in image_base64_list:
-            logger.info(f"img_base64:{len(img_base64)}")
-            content.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{img_base64}"
-                }
+        
+        # Azure OpenAI APIとOpenAI APIで画像の扱いが異なる
+        if openai.api_type == "azure":
+            # Azure OpenAI APIの場合
+            content = []
+            content.append({"type": "text", "text": prompt})
+            for img_base64 in image_base64_list:
+                logger.info(f"img_base64:{len(img_base64)}")
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{img_base64}"
+                    }
+                })
+            messages.append({
+                "role": "user",
+                "content": content
             })
-        messages.append({
-            "role": "user",
-            "content": content
-        })
+        else:
+            # 通常のOpenAI APIの場合
+            content = [{"type": "text", "text": prompt}]
+            for img_base64 in image_base64_list:
+                logger.info(f"img_base64:{len(img_base64)}")
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{img_base64}"
+                    }
+                })
+            messages.append({
+                "role": "user",
+                "content": content
+            })
     else:
         messages.append({"role": "user", "content": prompt})
 
-    # messagesをテキストファイルに出力
-    # logger.info(prompt)
-
-    response = openai.chat.completions.create(
-        model=model,
-        messages=messages,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        response_format={"type": "json_object"}
-    )
-    # st.write(response.choices[0].message.content)
-    logger.info("==========call_gpt end==========")
-    return response.choices[0].message.content
+    # APIの種類に応じてAPIを呼び出す
+    if openai.api_type == "azure":
+        # Azure OpenAI APIの場合
+        response = openai.ChatCompletion.create(
+            deployment_id=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format={"type": "json_object"}
+        )
+        logger.info("==========call_gpt end==========")
+        return response.choices[0].message.content
+    else:
+        # 通常のOpenAI APIの場合
+        response = openai.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format={"type": "json_object"}
+        )
+        logger.info("==========call_gpt end==========")
+        return response.choices[0].message.content
 
 ##############################
 # PDFをページ単位で画像変換 #

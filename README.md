@@ -1,42 +1,62 @@
 # PDF分析アプリ
 
-このアプリケーションは、PDFファイルをアップロードして文書構造を分析し、図表や画像を自動的に抽出するWebアプリケーションです。
+このアプリケーションは、PDFファイルをアップロードして文書構造を分析し、図表や画像を抽出するStreamlitアプリケーションです。
 
 ## 機能
 
-- PDFファイルのアップロードと画像変換
-- 文書構造の自動分析
-- 図表・画像の自動抽出
-- 抽出された要素の分類と説明
-- 分析結果の可視化
+- PDFファイルのアップロードと処理
+- 文書構造の分析（章や節の抽出）
+- 図表や画像の自動検出と分類
+- 検出された要素の要約生成
 
-## インストール方法
+## 環境設定
 
-1. リポジトリをクローン：
-```bash
-git clone [リポジトリURL]
-cd [プロジェクトディレクトリ]
+1. リポジトリをクローンします
+2. 必要なパッケージをインストールします
+   ```
+   pip install -r requirements.txt
+   ```
+3. `.env.sample`ファイルを`.env`にコピーし、APIキーなどの設定を行います
+
+## 環境変数の設定
+
+`.env`ファイルに以下の環境変数を設定します：
+
+### OpenAI API（通常のOpenAI APIを使用する場合）
+
+```
+OPENAI_API_KEY=your_openai_api_key_here
 ```
 
-2. 必要なパッケージをインストール：
-```bash
-pip install -r requirements.txt
+### Azure OpenAI API（Azure OpenAI APIを使用する場合）
+
+```
+AZURE_OPENAI_API_KEY=your_azure_openai_api_key_here
+AZURE_OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com/
+AZURE_OPENAI_DEPLOYMENT=your_deployment_name_here
+AZURE_OPENAI_API_VERSION=2023-05-15
 ```
 
-3. アプリケーションの実行：
-```bash
-streamlit run app.py
+**注意**: Azure OpenAI APIを使用する場合は、上記の4つの環境変数をすべて設定する必要があります。設定されていない場合は、通常のOpenAI APIが使用されます。
+
+### その他の設定
+
+```
+ENABLE_FILE_LOGGING=false  # ログファイルを出力する場合はtrueに設定
 ```
 
 ## 使用方法
 
-1. Webブラウザで`http://localhost:8501`にアクセス
-2. PDFファイルをアップロード
-3. 「文書構造を分析」または「画像分析」ボタンをクリックして分析を実行
-4. 分析結果を確認
+1. アプリケーションを起動します
+   ```
+   streamlit run app.py
+   ```
+2. ブラウザで表示されるインターフェースからPDFファイルをアップロードします
+3. 「文書構造を分析」または「すべてのページを分析」ボタンをクリックして分析を開始します
+4. 分析結果が表示されます
 
 ## 注意事項
 
-- 一時ファイルは`tmp`フォルダに保存されます
 - 大きなPDFファイルの処理には時間がかかる場合があります
-- OpenAI APIキーが必要です 
+- 画像分析には十分なメモリが必要です
+- APIキーの使用には料金が発生する場合があります 
