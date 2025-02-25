@@ -14,6 +14,10 @@ import shutil
 import uuid
 import cv2
 import numpy as np
+from dotenv import load_dotenv
+
+# .envファイルの読み込み
+load_dotenv()
 
 # ロギングの設定
 handlers = [logging.StreamHandler(sys.stdout)]
@@ -71,7 +75,8 @@ def call_gpt(prompt, image_base64_list=None, max_tokens=1500, temperature=0.0, m
     messages = [
         {"role": "system", "content": "あなたは与えられた画像から俯瞰的な目線で正確に文書構造を読み取り、JSON形式で返してください。"}
     ]
-    
+
+    logger.info("==========call_gpt start==========")
     if image_base64_list:
         # 画像が1つ以上ある場合
         logger.info(f"image_base64_list:{len(image_base64_list)}")
@@ -92,8 +97,8 @@ def call_gpt(prompt, image_base64_list=None, max_tokens=1500, temperature=0.0, m
         messages.append({"role": "user", "content": prompt})
 
     # messagesをテキストファイルに出力
-    with open("messages.txt", "w", encoding="utf-8") as f:
-        f.write(str(messages))
+    # logger.info(prompt)
+
     response = openai.chat.completions.create(
         model=model,
         messages=messages,
@@ -102,6 +107,7 @@ def call_gpt(prompt, image_base64_list=None, max_tokens=1500, temperature=0.0, m
         response_format={"type": "json_object"}
     )
     # st.write(response.choices[0].message.content)
+    logger.info("==========call_gpt end==========")
     return response.choices[0].message.content
 
 ##############################
@@ -200,10 +206,10 @@ def create_section_summary(section, pages_images, total_pages, file_name, curren
         max_content_depth: コンテンツを抽出する最大の階層の深さ
     """
     s_page = section.get("start_image", 0) - 1
-    e_page = total_pages - 1
+    e_page = s_page + total_pages - 1
     
-    s_page = max(0, min(s_page, total_pages-1))
-    e_page = max(0, min(e_page, total_pages-1))
+    s_page = max(0, s_page)
+    e_page = max(0, e_page)
     if e_page < s_page:
         e_page = s_page
 
@@ -265,6 +271,7 @@ def create_section_summary(section, pages_images, total_pages, file_name, curren
         section.pop("content", None)
 
     if current_depth == max_content_depth:
+        # s_pageからe_page
         if section.get("images", "") != "":
             
             # 図や表の抽出
@@ -283,23 +290,31 @@ def create_section_summary(section, pages_images, total_pages, file_name, curren
                 file_dir = os.path.join(TMP_DIR, "analysis_results", file_name)
                 json_path = os.path.join(file_dir, "analysis_results.json")
                 
+                st.write("============section============")
+                st.json(section)
+                st.write("============prompt text============")
+                st.write(prompt)
                 if os.path.exists(json_path):
                     with open(json_path, "r", encoding="utf-8") as f:
                         analysis_results = json.load(f)
                     
-                    # s_pageからe_pageまでの画像を取得
-                    for page_num in range(s_page, e_page + 1):
-                        if "pages" in analysis_results:
+                    st.write(f"============analysis_results:{section.get('title', 'NoTitle')} {s_page}ページ → {e_page}ページ============")
+                    
+                    # start_pageからend_pageまでの画像を取得  
+                    for page_num in range(s_page + 1, e_page + 2):
+                        if "pages" in analysis_results and str(page_num) in analysis_results["pages"]:
                             for page_info in analysis_results["pages"][str(page_num)]["regions"]:
                                 path = page_info["path"]
                                 type = page_info["type"]
                                 # typeに「図」「イメージ」「表」「グラフ」が含まれているかチェック
                                 if "図" in type or "イメージ" in type or "表" in type or "グラフ" in type:
+                                    st.write(f"============prompt image:{page_num}============")
                                     if os.path.exists(path):
                                         with open(path, "rb") as img_file:
+                                            st.image(path)
                                             img_base64 = base64.b64encode(img_file.read()).decode()
                                         image_base64_list_sub.append(img_base64)
-                
+            
                 logger.info(f"セクション画像を取得: {s_page}ページ → {e_page}ページ ({len(image_base64_list_sub)}枚)")
             except Exception as e:
                 logger.error(f"セクション画像の取得中にエラー: {str(e)}")
@@ -311,7 +326,25 @@ def create_section_summary(section, pages_images, total_pages, file_name, curren
     # サブセクションの再帰的処理
     if "sections" in section and isinstance(section["sections"], list):
         for subsec in section["sections"]:
-            create_section_summary(subsec, pages_images, total_pages, file_name,
+            # サブセクションの開始ページを決定
+            s_page = subsec.get("start_image", 0) - 1
+            # サブセクションの終了ページを決定
+            # デフォルトは親セクションの終了ページ
+            e_page = section.get("end_image", total_pages)
+            
+            # サブセクションの終了ページを、このサブセクションの次のサブセクションの開始ページから決定
+            # 現在のサブセクションのインデックスを取得
+            current_index = section["sections"].index(subsec)
+            
+            # 次のサブセクションが存在する場合
+            if current_index + 1 < len(section["sections"]):
+                next_subsec = section["sections"][current_index + 1]
+                if "start_image" in next_subsec:
+                    # 次のサブセクションの開始ページの1つ前をこのサブセクションの終了ページとする
+                    e_page = next_subsec["start_image"] - 1
+                        
+            st.write(f"============subsec:{subsec.get('title', 'NoTitle')} {s_page}ページ → {e_page}ページ============")
+            create_section_summary(subsec, pages_images, e_page-s_page+1, file_name,
                                 current_depth + 1, max_summary_depth, max_content_depth)
 
 def extract_and_summarize_level2_sections_multipass(pages_images, chunk_size=10, summary_depth=2, content_depth=2, file_name=None):
@@ -416,7 +449,32 @@ def extract_and_summarize_level2_sections_multipass(pages_images, chunk_size=10,
 
     # 各セクションの要約とコンテンツを作成
     for section in final_sections:
-        create_section_summary(section, pages_images, total_pages, file_name, 1, summary_depth, content_depth)
+        # セクションの開始ページと終了ページを決定
+        s_page = section.get("start_image", 0) - 1
+        st.write(f"============section:{section.get('title', 'NoTitle')} {s_page}ページ============")
+        # 次のセクションの開始ページ-1 または 最終ページをend_pageとする
+        next_section_start = None
+        for next_section in final_sections:
+            if next_section.get("start_image", 0) > section.get("start_image", 0):
+                next_section_start = next_section.get("start_image", 0)
+                st.write(f"============next_section:{next_section.get('title', 'NoTitle')} {next_section_start}ページ============")
+                break
+        st.write(f"============total_pages:{total_pages}============")  
+        e_page = (next_section_start - 2) if next_section_start else (total_pages - 1)
+        st.write(f"============e_page:{e_page}============")
+        # ページ範囲を正規化
+        s_page = max(0, min(s_page, total_pages-1))
+        e_page = max(0, min(e_page, total_pages-1))
+        if e_page < s_page:
+            e_page = s_page
+
+        # セクションに関連する画像のみを抽出
+        section_images = pages_images[s_page:e_page+1]
+
+        st.write(f"============section_images:{section.get('title', 'NoTitle')} {s_page}ページ → {e_page}ページ============")
+        
+        # セクションの要約とコンテンツを作成（対象画像のみを渡す）
+        create_section_summary(section, section_images, e_page-s_page+1, file_name, 1, summary_depth, content_depth)
 
     logger.info("レベル2セクションの抽出が完了")
     return final_sections
@@ -454,7 +512,7 @@ def main():
 
             try:
                 # タブを作成
-                tab1, tab2, tab3 = st.tabs(["文書構造分析", "画像分析", "分析結果サマリー"])
+                tab1, tab2= st.tabs(["文書構造分析", "画像分析"])
 
                 with tab1:
                     st.header("文書構造分析")
@@ -472,6 +530,12 @@ def main():
                                 content_depth=content_depth,
                                 file_name=file_name
                             )
+                            # JSONファイルを出力
+                            json_output_path = os.path.join("output", file_name, "document_structure.json")
+                            os.makedirs(os.path.dirname(json_output_path), exist_ok=True)
+                            with open(json_output_path, "w", encoding="utf-8") as f:
+                                json.dump(result, f, ensure_ascii=False, indent=2)
+                            st.success(f"文書構造分析結果をJSONファイルに保存しました: {json_output_path}")
                             st.json(result)
 
                 with tab2:
@@ -546,25 +610,6 @@ def main():
                                 file_name
                             )
                 
-                with tab3:
-                    st.header("分析結果サマリー")
-                    summary = st.session_state.page_manager.get_regions_summary()
-                    if summary:
-                        for page_num, page_summary in summary.items():
-                            with st.expander(f"ページ {page_num}"):
-                                st.write(f"総領域数: {page_summary['total_regions']}")
-                                st.write(f"統合された領域数: {page_summary['merged_regions']}")
-                                st.write("### 検出された領域")
-                                for region in page_summary['regions']:
-                                    region_type = region.get('type', '不明')
-                                    st.write(f"- 領域 {region['id']} ({region_type})")
-                                    st.write(f"  - バウンディングボックス: x={region['bbox']['x']}, y={region['bbox']['y']}, "
-                                           f"width={region['bbox']['width']}, height={region['bbox']['height']}")
-                                    if region['merged_from']:
-                                        st.write(f"  - 統合元: 領域 {', '.join(map(str, region['merged_from']))}")
-                    else:
-                        st.info("まだ分析が実行されていません。")
-
             finally:
                 # 処理完了のログ記録
                 logger.info("PDFの処理が完了しました")
