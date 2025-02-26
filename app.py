@@ -15,6 +15,7 @@ import uuid
 import cv2
 import numpy as np
 from dotenv import load_dotenv
+import traceback
 
 # .envファイルの読み込み
 load_dotenv()
@@ -53,6 +54,7 @@ azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2023-05-15")
 if azure_api_key and azure_endpoint and azure_deployment:
     logger.info("Azure OpenAI APIを使用します")
     openai.api_type = "azure"
+    openai.api_config_type = "azure"  # 明示的にapi_config_typeを設定
     openai.api_key = azure_api_key
     openai.api_base = azure_endpoint
     openai.api_version = azure_api_version
@@ -61,7 +63,9 @@ else:
     # 環境変数からOpenAI APIキーを取得
     logger.info("OpenAI APIを使用します")
     openai.api_key = os.getenv("OPENAI_API_KEY")
-    default_model = "gpt-4-vision-preview"  # デフォルトモデル
+    openai.api_type = "openai"  # 明示的にapi_typeを設定
+    openai.api_config_type = "openai"  # 明示的にapi_config_typeを設定
+    default_model = "gpt-4o"  # デフォルトモデル
     
     if not openai.api_key:
         st.error("OpenAI APIキーが設定されていません。環境変数 'OPENAI_API_KEY' を設定してください。")
@@ -143,7 +147,13 @@ def call_gpt(prompt, image_base64_list=None, max_tokens=1500, temperature=0.0, m
     # APIの種類に応じてAPIを呼び出す
     if openai.api_type == "azure":
         # Azure OpenAI APIの場合
-        response = openai.ChatCompletion.create(
+        # 明示的にAzure OpenAIクライアントを初期化
+        client = openai.AzureOpenAI(
+            api_key=openai.api_key,
+            api_version=openai.api_version,
+            azure_endpoint=openai.api_base
+        )
+        response = client.chat.completions.create(
             deployment_id=model,
             messages=messages,
             max_tokens=max_tokens,
@@ -154,7 +164,11 @@ def call_gpt(prompt, image_base64_list=None, max_tokens=1500, temperature=0.0, m
         return response.choices[0].message.content
     else:
         # 通常のOpenAI APIの場合
-        response = openai.chat.completions.create(
+        # 明示的にクライアントを初期化
+        client = openai.OpenAI(
+            api_key=openai.api_key
+        )
+        response = client.chat.completions.create(
             model=model,
             messages=messages,
             max_tokens=max_tokens,
@@ -167,7 +181,7 @@ def call_gpt(prompt, image_base64_list=None, max_tokens=1500, temperature=0.0, m
 ##############################
 # PDFをページ単位で画像変換 #
 ##############################
-def pdf_to_images(pdf_file, dpi=1000):
+def pdf_to_images(pdf_file, dpi=1000, max_pixels=4000000):
     try:
         logger.info(f"PDFの画像変換とテキスト抽出を開始: DPI={dpi}")
         
@@ -197,6 +211,11 @@ def pdf_to_images(pdf_file, dpi=1000):
             pix = page.get_pixmap(dpi=dpi)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             
+            # 早い段階でのリサイズを適用（メモリ使用量削減）
+            img_np = np.array(img)
+            img_np = resize_with_aspect_ratio(img_np, max_pixels=max_pixels)
+            img = Image.fromarray(img_np)
+            
             # 画像を一時フォルダに保存
             img_path = os.path.join(session_tmp_dir, f"page_{page_num + 1}.jpg")
             img.save(img_path, "JPEG", quality=95)
@@ -211,11 +230,100 @@ def pdf_to_images(pdf_file, dpi=1000):
         doc.close()
         logger.info("PDFの画像変換とテキスト抽出が完了しました")
         return images_info
-            
+        
     except Exception as e:
         logger.error(f"PDFの処理に失敗: {str(e)}")
         st.error(f"PDFの処理に失敗しました: {str(e)}")
-        return []
+        return None
+
+def get_page_image(doc, page_num, dpi=1000, max_pixels=4000000, session_tmp_dir=None):
+    """
+    1ページだけを処理して画像を返す関数（オンデマンド処理）
+    Args:
+        doc: PDFドキュメントオブジェクト
+        page_num: 処理するページ番号（0始まり）
+        dpi: 画像変換のDPI値
+        max_pixels: 最大ピクセル数
+        session_tmp_dir: 一時フォルダのパス（Noneの場合は新規作成）
+    Returns:
+        dict: 画像情報を含む辞書
+    """
+    try:
+        logger.info(f"ページ {page_num + 1} のオンデマンド処理を開始")
+        
+        # 一時フォルダが指定されていない場合は新規作成
+        if session_tmp_dir is None or not os.path.exists(session_tmp_dir):
+            session_id = str(uuid.uuid4())
+            session_tmp_dir = os.path.join(TMP_DIR, session_id)
+            logger.info(f"オンデマンド処理用の一時フォルダを作成: {session_tmp_dir}")
+        
+        # 一時フォルダが存在することを確認
+        os.makedirs(session_tmp_dir, exist_ok=True)
+        logger.info(f"一時フォルダの確認または作成: {session_tmp_dir}")
+        
+        # ページを読み込み
+        page = doc.load_page(page_num)
+        
+        # テキスト抽出
+        text = page.get_text()
+        
+        # 画像パスを設定
+        img_path = os.path.join(session_tmp_dir, f"page_{page_num + 1}.jpg")
+        
+        # 既にファイルが存在する場合はそれを使用
+        if os.path.exists(img_path) and os.path.getsize(img_path) > 0:
+            logger.info(f"既存の画像ファイルを使用: {img_path}")
+            img = Image.open(img_path)
+            return {
+                "image": img,
+                "path": img_path,
+                "text": text,
+                "tmp_dir": session_tmp_dir
+            }
+        
+        # 画像変換
+        logger.info(f"ページ {page_num + 1} の画像変換を開始（DPI={dpi}）")
+        pix = page.get_pixmap(dpi=dpi)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        
+        # 早い段階でのリサイズを適用
+        logger.info(f"ページ {page_num + 1} の画像リサイズを実行（最大ピクセル数={max_pixels}）")
+        img_np = np.array(img)
+        img_np = resize_with_aspect_ratio(img_np, max_pixels=max_pixels)
+        img = Image.fromarray(img_np)
+        
+        # 画像を一時フォルダに保存
+        logger.info(f"ページ {page_num + 1} の画像を保存: {img_path}")
+        img.save(img_path, "JPEG", quality=95)
+        
+        # 保存された画像の存在を確認
+        if not os.path.exists(img_path) or os.path.getsize(img_path) == 0:
+            raise IOError(f"画像ファイルの保存に失敗しました: {img_path}")
+        
+        logger.info(f"ページ {page_num + 1} のオンデマンド処理が完了")
+        return {
+            "image": img,
+            "path": img_path,
+            "text": text,
+            "tmp_dir": session_tmp_dir
+        }
+        
+    except Exception as e:
+        logger.error(f"ページ {page_num + 1} のオンデマンド処理に失敗: {str(e)}", exc_info=True)
+        # エラーが発生した場合でも最低限の情報を返すようにする
+        if 'page' in locals() and 'text' not in locals():
+            try:
+                text = page.get_text()
+            except:
+                text = ""
+                
+        return {
+            "image": None,
+            "path": None,
+            "text": text if 'text' in locals() else "",
+            "tmp_dir": session_tmp_dir,
+            "error": str(e)
+        }
 
 def encode_image_to_base64(image_info):
     """
@@ -550,6 +658,10 @@ def main():
         cleanup_tmp_files()
         st.sidebar.success("一時フォルダをクリアしました")
 
+    # DPI設定をサイドバーに追加
+    dpi_value = st.sidebar.slider("DPI設定", min_value=100, max_value=1000, value=300, step=100)
+    max_pixels = st.sidebar.slider("最大ピクセル数（百万単位）", min_value=1, max_value=10, value=4, step=1) * 1000000
+
     # ファイルアップロード
     uploaded_file = st.file_uploader("PDFファイルをアップロード", type=['pdf'])
 
@@ -558,129 +670,229 @@ def main():
             # ファイル名を取得（拡張子を除く）
             file_name = os.path.splitext(uploaded_file.name)[0]
             
-            # PDFを画像に変換
-            pages_images = pdf_to_images(uploaded_file)
-            if not pages_images:
-                st.error("PDFの処理に失敗しました。")
-                return
+            # PDFドキュメントをセッションに保存（オンデマンド処理のため）
+            if 'pdf_doc' not in st.session_state or st.session_state.get('current_pdf') != uploaded_file.name:
+                pdf_bytes = uploaded_file.read()
+                pdf_stream = io.BytesIO(pdf_bytes)
+                st.session_state.pdf_doc = fitz.open(stream=pdf_stream, filetype="pdf")
+                st.session_state.current_pdf = uploaded_file.name
+                st.session_state.total_pages = len(st.session_state.pdf_doc)
+                
+                # セッション固有の一時フォルダを作成
+                st.session_state.session_tmp_dir = os.path.join(TMP_DIR, str(uuid.uuid4()))
+                os.makedirs(st.session_state.session_tmp_dir, exist_ok=True)
+                logger.info(f"セッション一時フォルダを作成: {st.session_state.session_tmp_dir}")
+                
+                # ページ情報の初期化
+                st.session_state.pages_images = []
+            
+            # タブを作成
+            tab1, tab2= st.tabs(["文書構造分析", "画像分析"])
 
-            try:
-                # タブを作成
-                tab1, tab2= st.tabs(["文書構造分析", "画像分析"])
+            with tab1:
+                st.header("文書構造分析")
+                
+                # 処理方法の選択
+                processing_method = st.radio(
+                    "処理方法を選択",
+                    ["全ページ一括処理", "オンデマンド処理（メモリ効率）"],
+                    index=1  # デフォルトはオンデマンド処理
+                )
+                
+                # 設定
+                chunk_size = st.sidebar.slider("チャンクサイズ", min_value=1, max_value=20, value=10)
+                summary_depth = st.sidebar.slider("要約を作成する階層の深さ", min_value=1, max_value=5, value=2)
+                content_depth = st.sidebar.slider("コンテンツを抽出する階層の深さ", min_value=1, max_value=5, value=2)
 
-                with tab1:
-                    st.header("文書構造分析")
-                    # 既存の文書構造分析の処理
-                    chunk_size = st.sidebar.slider("チャンクサイズ", min_value=1, max_value=20, value=10)
-                    summary_depth = st.sidebar.slider("要約を作成する階層の深さ", min_value=1, max_value=5, value=2)
-                    content_depth = st.sidebar.slider("コンテンツを抽出する階層の深さ", min_value=1, max_value=5, value=2)
-
-                    if st.button("文書構造を分析"):
-                        with st.spinner("文書構造を分析中..."):
-                            result = extract_and_summarize_level2_sections_multipass(
-                                pages_images,
-                                chunk_size=chunk_size,
-                                summary_depth=summary_depth,
-                                content_depth=content_depth,
-                                file_name=file_name
-                            )
-                            # JSONファイルを出力
-                            json_output_path = os.path.join("output", file_name, "document_structure.json")
-                            os.makedirs(os.path.dirname(json_output_path), exist_ok=True)
-                            with open(json_output_path, "w", encoding="utf-8") as f:
-                                json.dump(result, f, ensure_ascii=False, indent=2)
-                            st.success(f"文書構造分析結果をJSONファイルに保存しました: {json_output_path}")
-                            st.json(result)
-
-                with tab2:
-                    st.header("画像分析")
-                    st.write("PDFの各ページから表や図、グラフを抽出します。")
-                    
-                    # 分析ボタン
-                    if st.button("すべてのページを分析"):
-                        total_pages = len(pages_images)
-                        progress_bar = st.progress(0)
+                if st.button("文書構造を分析"):
+                    with st.spinner("文書構造を分析中..."):
+                        if processing_method == "全ページ一括処理":
+                            # 従来の処理方法（全ページ一括）
+                            uploaded_file.seek(0)  # ファイルポインタをリセット
+                            pages_images = pdf_to_images(uploaded_file, dpi=dpi_value, max_pixels=max_pixels)
+                            if not pages_images:
+                                st.error("PDFの処理に失敗しました。")
+                                return
+                        else:
+                            # オンデマンド処理（必要なページのみ）
+                            pages_images = []
+                            progress_bar = st.progress(0)
+                            for page_num in range(st.session_state.total_pages):
+                                progress_percent = (page_num + 1) / st.session_state.total_pages
+                                progress_bar.progress(progress_percent)
+                                st.write(f"ページ {page_num + 1}/{st.session_state.total_pages} を処理中...")
+                                
+                                page_image = get_page_image(
+                                    st.session_state.pdf_doc,
+                                    page_num,
+                                    dpi=dpi_value,
+                                    max_pixels=max_pixels,
+                                    session_tmp_dir=st.session_state.session_tmp_dir
+                                )
+                                if page_image:
+                                    pages_images.append(page_image)
+                                    
+                                    # メモリを解放するため、画像オブジェクトは保持せずパスのみ保存
+                                    if "image" in page_image:
+                                        page_image["image"].close()
+                                        page_image["image"] = None
                         
-                        for i, page_info in enumerate(pages_images):
-                            with st.spinner(f"ページ {i + 1}/{total_pages} を分析中..."):
+                        # 文書構造分析を実行
+                        result = extract_and_summarize_level2_sections_multipass(
+                            pages_images,
+                            chunk_size=chunk_size,
+                            summary_depth=summary_depth,
+                            content_depth=content_depth,
+                            file_name=file_name
+                        )
+                        
+                        # JSONファイルを出力
+                        json_output_path = os.path.join("output", file_name, "document_structure.json")
+                        os.makedirs(os.path.dirname(json_output_path), exist_ok=True)
+                        with open(json_output_path, "w", encoding="utf-8") as f:
+                            json.dump(result, f, ensure_ascii=False, indent=2)
+                        st.success(f"文書構造分析結果をJSONファイルに保存しました: {json_output_path}")
+                        st.json(result)
+
+            with tab2:
+                st.header("画像分析")
+                st.write("PDFの各ページから表や図、グラフを抽出します。")
+                
+                # 分析ボタン
+                if st.button("画像分析を実行"):
+                    if not hasattr(st.session_state, 'pdf_doc') or st.session_state.pdf_doc is None:
+                        st.error("PDFファイルが読み込まれていません。先にPDFファイルをアップロードしてください。")
+                        return
+                    
+                    # 一時フォルダの状態を確認
+                    if not hasattr(st.session_state, 'session_tmp_dir') or not os.path.exists(st.session_state.session_tmp_dir):
+                        st.session_state.session_tmp_dir = os.path.join(TMP_DIR, str(uuid.uuid4()))
+                        os.makedirs(st.session_state.session_tmp_dir, exist_ok=True)
+                        logger.info(f"画像分析用の一時フォルダを新規作成: {st.session_state.session_tmp_dir}")
+                    else:
+                        logger.info(f"既存の一時フォルダを使用: {st.session_state.session_tmp_dir}")
+                    
+                    total_pages = st.session_state.total_pages
+                    progress_bar = st.progress(0)
+                    
+                    # PageAnalysisManagerを初期化
+                    if 'page_manager' not in st.session_state:
+                        st.session_state.page_manager = PageAnalysisManager()
+                    
+                    for page_num in range(total_pages):
+                        with st.spinner(f"ページ {page_num + 1}/{total_pages} を分析中..."):
+                            # オンデマンドでページ画像を取得
+                            page_image = get_page_image(
+                                st.session_state.pdf_doc,
+                                page_num,
+                                dpi=dpi_value,
+                                max_pixels=max_pixels,
+                                session_tmp_dir=st.session_state.session_tmp_dir
+                            )
+                            
+                            if page_image:
                                 # 連結成分ベースの分析を実行
                                 analysis_result = analyze_image_content_with_connected_components(
-                                    page_info["path"],
+                                    page_image["path"],
                                     file_name,
-                                    i + 1
+                                    page_num + 1
                                 )
                                 
                                 # 結果を表示
-                                with st.expander(f"ページ {i + 1} の分析結果"):
+                                with st.expander(f"ページ {page_num + 1} の分析結果"):
                                     display_single_analysis_results(
                                         analysis_result,
                                         st.session_state.page_manager,
-                                        i + 1,
+                                        page_num + 1,
                                         file_name
                                     )
                                 
-                                # プログレスバーを更新
-                                progress_bar.progress((i + 1) / total_pages)
-                        
-                        st.success("すべてのページの分析が完了しました")
-                        
-                        # 最終的なJSONファイルの内容を表示
-                        json_filename = os.path.join(TMP_DIR, "analysis_results", file_name, "analysis_results.json")
-                        if os.path.exists(json_filename):
-                            with open(json_filename, "r", encoding="utf-8") as f:
-                                final_results = json.load(f)
-                            st.write("### 全ページの分析結果")
-                            st.json(final_results)
+                                # 使用後は画像オブジェクトを解放（メモリ効率化）
+                                if "image" in page_image and page_image["image"] is not None:
+                                    page_image["image"].close()
+                                    page_image["image"] = None
+                            else:
+                                st.warning(f"ページ {page_num + 1} の画像取得に失敗しました。スキップします。")
+                            
+                            # プログレスバーを更新
+                            progress_bar.progress((page_num + 1) / total_pages)
                     
-                    # 個別ページの分析オプションも残す
-                    st.divider()
-                    st.subheader("個別ページの分析")
+                    st.success("すべてのページの分析が完了しました")
                     
+                    # 最終的なJSONファイルの内容を表示
+                    json_output_dir = os.path.join("output", file_name)
+                    json_filename = os.path.join(json_output_dir, "analysis_results.json")
+                    os.makedirs(json_output_dir, exist_ok=True)
+                    
+                    # 分析結果をJSONに保存
+                    all_results = st.session_state.page_manager.get_all_results()
+                    with open(json_filename, "w", encoding="utf-8") as f:
+                        json.dump(all_results, f, ensure_ascii=False, indent=2)
+                    
+                    st.write("### 全ページの分析結果")
+                    st.json(all_results)
+                
+                # 個別ページの分析オプションも追加
+                st.divider()
+                st.subheader("個別ページの分析")
+                
+                if hasattr(st.session_state, 'pdf_doc') and st.session_state.pdf_doc:
                     # ページ選択
                     page_num = st.selectbox(
                         "分析するページを選択",
-                        options=list(range(1, len(pages_images) + 1)),
+                        options=list(range(1, st.session_state.total_pages + 1)),
                         format_func=lambda x: f"ページ {x}"
                     )
-
+                    
                     # 個別分析ボタン
-                    if st.button("選択したページを分析"):
+                    if st.button("解析実行"):
                         with st.spinner("画像を分析中..."):
-                            selected_image = pages_images[page_num - 1]
+                            # 一時フォルダの状態を確認
+                            if not hasattr(st.session_state, 'session_tmp_dir') or not os.path.exists(st.session_state.session_tmp_dir):
+                                st.session_state.session_tmp_dir = os.path.join(TMP_DIR, str(uuid.uuid4()))
+                                os.makedirs(st.session_state.session_tmp_dir, exist_ok=True)
+                                logger.info(f"個別ページ分析用の一時フォルダを新規作成: {st.session_state.session_tmp_dir}")
                             
-                            # 連結成分ベースの分析を実行
-                            analysis_result = analyze_image_content_with_connected_components(
-                                selected_image["path"],
-                                file_name,
-                                page_num
+                            # オンデマンドでページ画像を取得
+                            selected_image = get_page_image(
+                                st.session_state.pdf_doc,
+                                page_num - 1,
+                                dpi=dpi_value,
+                                max_pixels=max_pixels,
+                                session_tmp_dir=st.session_state.session_tmp_dir
                             )
                             
-                            # 結果を表示
-                            st.subheader("検出結果")
-                            display_single_analysis_results(
-                                analysis_result,
-                                st.session_state.page_manager,
-                                page_num,
-                                file_name
-                            )
-                
-            finally:
-                # 処理完了のログ記録
-                logger.info("PDFの処理が完了しました")
-                # すべての処理が完了したら一時フォルダを削除
-                for page_info in pages_images:
-                    tmp_dir = page_info.get("tmp_dir")
-                    if tmp_dir and os.path.exists(tmp_dir):
-                        try:
-                            shutil.rmtree(tmp_dir)
-                            logger.info(f"一時フォルダを削除しました: {tmp_dir}")
-                        except Exception as e:
-                            logger.error(f"一時フォルダの削除に失敗しました: {str(e)}")
-
+                            if selected_image:
+                                # 連結成分ベースの分析を実行
+                                analysis_result = analyze_image_content_with_connected_components(
+                                    selected_image["path"],
+                                    file_name,
+                                    page_num
+                                )
+                                
+                                # 結果を表示
+                                st.subheader("検出結果")
+                                display_single_analysis_results(
+                                    analysis_result,
+                                    st.session_state.page_manager,
+                                    page_num,
+                                    file_name
+                                )
+                                
+                                # 使用後は画像オブジェクトを解放
+                                if "image" in selected_image and selected_image["image"] is not None:
+                                    selected_image["image"].close()
+                                    selected_image["image"] = None
+                            else:
+                                st.error(f"ページ {page_num} の画像取得に失敗しました。再試行するか、DPI値を下げてみてください。")
+                                if "error" in selected_image:
+                                    st.error(f"エラー詳細: {selected_image['error']}")
+                else:
+                    st.info("PDFファイルをアップロードすると、個別ページの分析が可能になります。")
+        
         except Exception as e:
             st.error(f"エラーが発生しました: {str(e)}")
-            logger.error(f"エラーが発生しました: {str(e)}")
-            # エラー時の自動クリーンアップを削除
+            logger.error(f"アプリケーションエラー: {str(e)}", exc_info=True)
 
 class PageAnalysisManager:
     """
@@ -1060,11 +1272,22 @@ def analyze_regions_with_llm(regions, file_name, page_num, overview_path=None):
 
 1. "type": 領域の種類（図/グラフ/表/テキスト/その他）※複数含まれる場合は「その他」と回答し、"needs_split"はtrueとしてください。
 2. "description": 領域の内容の説明
-3. "should_merge_with": 1つの図/グラフ/表が複数の領域に分割されてしまっている場合、統合が必要なのでどのregionと統合すべきかを返してください.
-4. "needs_split": 図/グラフ/表/テキストなど複数の要素が1つの領域（1つの画像）に含まれている場合、さらに分割が必要なのでtrueを返してください.
+3. "content_types": 領域内に含まれる全ての要素の種類をリストで指定（例：["テキスト", "グラフ"]）
+4. "should_merge_with": 1つの図/グラフ/表が複数の領域に分割されてしまっている場合、統合が必要なのでどのregionと統合すべきかを返してください.
+5. "needs_split": 以下の場合は必ずtrueを返してください:
+   - グラフとテキストが同じ領域に含まれている場合（最優先で分割）
+   - 表とテキストが同じ領域に含まれている場合（最優先で分割）
+   - 画像とテキストが同じ領域に含まれている場合（最優先で分割）
    - 1つの領域に複数の段落のテキスト、図表が含まれている場合
    - 複数のグラフが1つの領域として検出されている場合
-   など
+   - 異なる内容や役割を持つ要素が1つの領域に含まれている場合
+6. "split_reason": 分割が必要な理由を具体的に記述してください。特に要素の混在（グラフとテキストなど）の場合は明確に記述してください。
+
+重要：適切な分析のためには、領域が適切な粒度で分割されていることが重要です。大きすぎる領域は積極的に分割を提案してください。特に以下の場合は必ず分割が必要です：
+- グラフ/表/画像とテキストが同じ領域に混在している（最も優先度の高い分割ケース）
+- 複数の図表、グラフが一つの領域に含まれている
+- 連続していない複数の段落が一つの領域になっている
+- 異なる役割を持つ要素（例：見出しと本文）が一緒になっている
 
 以下のJSON形式で回答してください：
 {{
@@ -1073,6 +1296,7 @@ def analyze_regions_with_llm(regions, file_name, page_num, overview_path=None):
             "id": 数値のID,  // "region1"ではなく1を返してください。"region1-1"のように枝番がある場合は1-1と返してください。
             "type": "図/グラフ/表/イメージ/テキスト/その他",
             "description": "内容の説明",
+            "content_types": ["テキスト", "グラフ"], // 領域内に含まれる全ての要素の種類
             "should_merge_with": [],
             "needs_split": true/false,
             "split_reason": "XXX"
@@ -1096,8 +1320,10 @@ def analyze_regions_with_llm(regions, file_name, page_num, overview_path=None):
 注意点：
 1. IDは文字列（"region1"）ではなくregion以降のみを返してください。"region1-1"のように枝番がある場合は1-1と返してください。
 2. 領域の種類は必ず "図"、"グラフ"、"表"、"イメージ"、"テキスト"、"その他" のいずれかを選択してください。その他はできるだけ選択しないでください。
-3. 分割が必要/不要な場合は、その理由を具体的に説明してください
-4. 統合や分割の判断は、領域の内容や配置を考慮して行ってください
+3. グラフ/表/画像とテキストが混在する場合は、必ず分割を提案してください。これは最優先事項です。
+4. 分割が必要/不要な場合は、その理由を具体的に説明してください
+5. 統合や分割の判断は、領域の内容や配置を考慮して行ってください
+6. 文書解析の品質向上のため、曖昧な場合は積極的に分割を提案してください
 """
         # 各領域の画像をLLMに送信
         analysis_result = call_gpt(prompt, image_base64_list=[r["base64"] for r in regions_with_base64])
@@ -1114,6 +1340,20 @@ def analyze_regions_with_llm(regions, file_name, page_num, overview_path=None):
                             region["id"] = region["id"].replace("region", "")
                         else:
                             region["id"] = region["id"]
+                    
+                    # content_typesの確認と補完
+                    if "content_types" not in region:
+                        # content_typesが無い場合は、typeから推測
+                        region["content_types"] = [region["type"]]
+                    
+                    # コンテンツタイプに基づいて分割が必要かどうかを再評価
+                    content_types = region.get("content_types", [])
+                    if len(content_types) > 1:
+                        # テキストと他の要素（グラフ/表/画像）が混在する場合
+                        if "テキスト" in content_types and any(t in content_types for t in ["グラフ", "表", "イメージ", "図"]):
+                            region["needs_split"] = True
+                            if not region.get("split_reason"):
+                                region["split_reason"] = f"異なる種類の要素（{', '.join(content_types)}）が混在しているため分割が必要"
 
             # merge_suggestionsのグループIDも変換
             if "merge_suggestions" in result:
@@ -1142,7 +1382,7 @@ def analyze_regions_with_llm(regions, file_name, page_num, overview_path=None):
                     return {"error": "領域の分析結果が不完全です"}
                 
                 # 型の種類を検証
-                if region["type"] not in ["図", "グラフ", "表", "その他"]:
+                if region["type"] not in ["図", "グラフ", "表", "イメージ", "テキスト", "その他"]:
                     region["type"] = "その他"
                 
                 # needs_splitがTrueの場合、split_reasonの存在を確認
@@ -1429,7 +1669,7 @@ def resize_with_aspect_ratio(image, max_pixels=4000000):
     
     return cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
 
-def analyze_image_content_with_connected_components(image_path, file_name, page_num, is_subsplit=False):
+def analyze_image_content_with_connected_components(image_path, file_name, page_num, is_subsplit=False, recursion_depth=0):
     """
     連結成分解析を使用して画像から大きな領域を抽出する関数
     重複や近接している領域は統合します。
@@ -1438,6 +1678,7 @@ def analyze_image_content_with_connected_components(image_path, file_name, page_
         file_name: 分析対象のファイル名
         page_num: ページ番号
         is_subsplit: 再分割処理かどうか（Trueの場合はより細かい分割を行う）
+        recursion_depth: 現在の再帰深度（深くなるにつれて徐々に細かくなる）
     Returns:
         dict: 抽出結果を含む辞書
     """
@@ -1467,22 +1708,43 @@ def analyze_image_content_with_connected_components(image_path, file_name, page_
         img = cv2.cvtColor(original_img, cv2.COLOR_BGR2GRAY)
         img_height, img_width = img.shape
 
-        # 再分割時は異なるパラメータを使用
+        # 再分割時は深さに応じてパラメータを段階的に調整
         if is_subsplit:
-            min_area = (img_width * img_height) * 0.001  # 0.1%に下げる
-            max_area = (img_width * img_height) * 0.5    # 50%に下げる
-            blur_size = 3  # ブラーを弱める
-            kernel_size = min(img_width, img_height) // 50  # より小さいカーネルを使用
-            dilation_iterations = 1  # 膨張処理を弱める
+            # 段階的に細かくなるように調整（1段階目は控えめな分割）
+            depth_factor = min(1.0, 0.4 + (recursion_depth * 0.3))  # 0.4→0.7→1.0と徐々に細かく
+            
+            # 最小領域サイズ（再帰深度が深くなるに従って小さくなる）
+            min_area = (img_width * img_height) * (0.002 - (recursion_depth * 0.0005))
+            min_area = max(min_area, (img_width * img_height) * 0.0005)  # 下限値を設定
+            
+            # 最大領域サイズも深さに応じて段階的に調整
+            max_area = (img_width * img_height) * (0.8 - (recursion_depth * 0.2))
+            max_area = max(max_area, (img_width * img_height) * 0.3)  # 下限値を設定
+            
+            # ブラーやカーネルサイズも深さに応じて段階的に調整
+            # medianBlurのカーネルサイズは奇数でなければならない
+            blur_size = 5 - recursion_depth * 2  # 5→3→1と奇数のみで調整
+            blur_size = max(3, blur_size)  # 最小値は3に制限
+            
+            kernel_size = max(3, min(img_width, img_height) // (50 + (recursion_depth * 25)))
+            # カーネルサイズも奇数に調整
+            kernel_size = kernel_size if kernel_size % 2 == 1 else kernel_size + 1
+            
+            dilation_iterations = max(1, 3 - recursion_depth)  # 3→2→1と徐々に少なく
+            
+            logger.info(f"再帰深度{recursion_depth}での分割パラメータ: min_area={min_area}, max_area={max_area}")
+            logger.info(f"blur_size={blur_size}, kernel_size={kernel_size}, dilation_iterations={dilation_iterations}")
         else:
-            min_area = (img_width * img_height) * 0.005  # 画像全体の0.5%
-            max_area = (img_width * img_height) * 0.95   # 画像全体の95%
+            min_area = (img_width * img_height) * 0.002  # 画像全体の0.2%に下げる
+            max_area = (img_width * img_height) * 0.9   # 画像全体の90%
             blur_size = 5
-            kernel_size = min(img_width, img_height) // 30
-            dilation_iterations = 3
+            kernel_size = min(img_width, img_height) // 50  # より小さいカーネルを使用
+            # カーネルサイズを奇数に調整
+            kernel_size = kernel_size if kernel_size % 2 == 1 else kernel_size + 1
+            dilation_iterations = 2  # 膨張処理を弱める
 
-        # カーネルサイズの制限
-        kernel_size = max(5, min(kernel_size, 100))  # 最小5、最大100に制限
+        # カーネルサイズの制限（必ず奇数になるように調整）
+        kernel_size = max(3, min(kernel_size, 49))  # 最小3、最大49に制限（奇数に調整）
 
         # メディアンブラーでノイズを軽減
         blurred = cv2.medianBlur(img, blur_size)
@@ -1537,7 +1799,15 @@ def analyze_image_content_with_connected_components(image_path, file_name, page_
         def should_merge_regions(rect1, rect2):
             # 重なりチェック
             has_overlap, overlap_ratio = check_overlap(rect1, rect2)
-            if has_overlap and overlap_ratio > 0.001:  # 0.1%以上の重なり
+            
+            # 再帰深度に応じて重なりの閾値を調整
+            # 深い再帰では、より厳しい（高い）閾値を使用
+            overlap_threshold = 0.01  # デフォルト値
+            if is_subsplit:
+                # 再帰深度に応じて閾値を高くする（より統合しにくくする）
+                overlap_threshold = 0.1 + (recursion_depth * 0.15)
+                
+            if has_overlap and overlap_ratio > overlap_threshold:  
                 return True
             
             # 重なりがない場合は距離をチェック
@@ -1555,8 +1825,15 @@ def analyze_image_content_with_connected_components(image_path, file_name, page_
             # 中心点間の距離を計算
             distance = np.sqrt((center1[0] - center2[0])**2 + (center1[1] - center2[1])**2)
             
-            # 再分割時は距離の閾値を小さくする
-            distance_threshold = min(diag1, diag2) * (0.3 if is_subsplit else 0.5)
+            # 再分割時は距離の閾値を深さに応じて調整
+            base_factor = 0.3  # 基準係数
+            if is_subsplit:
+                # 再帰深度に応じて係数を小さくする（より統合しにくくする）
+                depth_factor = max(0.1, base_factor - (recursion_depth * 0.1))  # 0.3→0.2→0.1と徐々に減少
+            else:
+                depth_factor = base_factor
+                
+            distance_threshold = min(diag1, diag2) * depth_factor
             return distance < distance_threshold
 
         # 領域の情報を一時保存
@@ -1682,20 +1959,31 @@ def split_region_using_existing_process(region_info, original_image, file_name, 
             logger.info(f"最大再帰深さ({max_depth})に達しました")
             return [region_info]
 
-        logger.info(f"領域 {region_info['id']} の分割処理を開始")
+        logger.info(f"領域 {region_info['id']} の分割処理を開始（再帰深度: {recursion_depth}）")
 
         # 領域を切り出し
         x, y = region_info["position"]["x"], region_info["position"]["y"]
         w, h = region_info["position"]["width"], region_info["position"]["height"]
         
         # 余白を追加
-        margin = 30
+        margin = 10  # 余白を小さくして分割精度を向上
         x1 = max(0, x - margin)
         y1 = max(0, y - margin)
         x2 = min(original_image.shape[1], x + w + margin)
         y2 = min(original_image.shape[0], y + h + margin)
         
         roi = original_image[y1:y2, x1:x2].copy()
+        
+        # 分割モードの判定（テキストとグラフ/表/画像が混在する場合など）
+        mixed_content = False
+        content_types = []
+        
+        # region_infoからcontent_typesフィールドがあれば取得
+        if "content_types" in region_info:
+            content_types = region_info["content_types"]
+            if "テキスト" in content_types and any(t in content_types for t in ["グラフ", "表", "イメージ", "図"]):
+                mixed_content = True
+                logger.info(f"領域 {region_info['id']} はテキストと他の要素が混在しています: {content_types}")
         
         # 切り出した画像を一時ファイルとして保存
         temp_roi_path = os.path.join(TMP_DIR, f"temp_roi_{region_info['id']}.png")
@@ -1705,20 +1993,187 @@ def split_region_using_existing_process(region_info, original_image, file_name, 
         with open(temp_roi_path, 'rb') as f:
             roi_bytes = io.BytesIO(f.read())
         
-        # 既存の分析処理を実行（is_subsplit=Trueを指定）
+        # 混在コンテンツの場合は特別な分割処理を適用
+        if mixed_content:
+            logger.info("混在コンテンツ用の強化分割処理を適用します")
+            
+            # グレースケールに変換
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            
+            # 二値化（テキストと非テキスト領域を分離しやすくする）
+            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            
+            # モルフォロジー演算でノイズを除去し、テキスト領域を強調
+            kernel = np.ones((3, 3), np.uint8)
+            opening = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+            
+            # テキスト特有の特徴を検出するため、水平方向に繋がった成分を見つける
+            horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 1))
+            detected_lines = cv2.morphologyEx(opening, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
+            
+            # テキスト領域を推定（水平方向の線が多い領域）
+            text_mask = cv2.dilate(detected_lines, kernel, iterations=3)
+            
+            # 連結成分の検出（テキスト以外の大きな領域を見つける）
+            num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary)
+            
+            # 面積によるフィルタリング（大きな領域はグラフや表、画像の可能性が高い）
+            min_size = 500  # 最小サイズのしきい値
+            non_text_regions = []
+            
+            for i in range(1, num_labels):
+                area = stats[i, cv2.CC_STAT_AREA]
+                x_cc = stats[i, cv2.CC_STAT_LEFT]
+                y_cc = stats[i, cv2.CC_STAT_TOP]
+                w_cc = stats[i, cv2.CC_STAT_WIDTH]
+                h_cc = stats[i, cv2.CC_STAT_HEIGHT]
+                
+                # 一定以上の大きさの領域を非テキスト領域候補とする
+                if area > min_size and w_cc > 50 and h_cc > 50:
+                    # テキスト特徴量が少ない領域を非テキスト領域とする
+                    component_mask = (labels == i).astype(np.uint8) * 255
+                    text_overlap = cv2.bitwise_and(component_mask, text_mask)
+                    text_ratio = np.sum(text_overlap) / np.sum(component_mask)
+                    
+                    if text_ratio < 0.3:  # テキスト特徴が30%未満なら非テキスト領域
+                        non_text_regions.append((x_cc, y_cc, w_cc, h_cc))
+            
+            # 非テキスト領域（グラフ/表/画像）とテキスト領域を分離
+            regions = []
+            
+            # 非テキスト領域をまず追加
+            for i, (x_nt, y_nt, w_nt, h_nt) in enumerate(non_text_regions):
+                regions.append({
+                    "id": f"{region_info['id']}_nt{i+1}",
+                    "position": {
+                        "x": x_nt,
+                        "y": y_nt,
+                        "width": w_nt,
+                        "height": h_nt
+                    },
+                    "parent_id": str(region_info["id"]),
+                    "split_depth": recursion_depth + 1,
+                    "type": "その他"  # LLM分析で詳細を判断
+                })
+            
+            # 非テキスト領域がない場合や検出に失敗した場合は、通常の分割処理を使用
+            if len(regions) == 0:
+                logger.info("混在コンテンツの特殊分割が失敗しました。通常の分割処理を使用します。")
+                use_default_process = True
+            else:
+                # テキスト領域を検出（非テキスト領域以外の部分）
+                text_regions_mask = np.ones_like(gray) * 255
+                for x_nt, y_nt, w_nt, h_nt in non_text_regions:
+                    text_regions_mask[y_nt:y_nt+h_nt, x_nt:x_nt+w_nt] = 0
+                
+                # テキスト領域のみのマスクを作成
+                text_only = cv2.bitwise_and(binary, text_regions_mask)
+                
+                # テキスト領域の連結成分を検出
+                num_text_labels, text_labels, text_stats, _ = cv2.connectedComponentsWithStats(text_only)
+                
+                # テキスト領域を追加
+                for i in range(1, num_text_labels):
+                    area = text_stats[i, cv2.CC_STAT_AREA]
+                    if area > 200:  # 小さすぎる領域は無視
+                        x_t = text_stats[i, cv2.CC_STAT_LEFT]
+                        y_t = text_stats[i, cv2.CC_STAT_TOP]
+                        w_t = text_stats[i, cv2.CC_STAT_WIDTH]
+                        h_t = text_stats[i, cv2.CC_STAT_HEIGHT]
+                        
+                        regions.append({
+                            "id": f"{region_info['id']}_t{i}",
+                            "position": {
+                                "x": x_t,
+                                "y": y_t,
+                                "width": w_t,
+                                "height": h_t
+                            },
+                            "parent_id": str(region_info["id"]),
+                            "split_depth": recursion_depth + 1,
+                            "type": "テキスト"
+                        })
+                
+                # それでもテキスト領域が検出できなければ、全体をテキスト領域として追加
+                if len(regions) == len(non_text_regions):
+                    regions.append({
+                        "id": f"{region_info['id']}_text",
+                        "position": {
+                            "x": 0,
+                            "y": 0,
+                            "width": roi.shape[1],
+                            "height": roi.shape[0]
+                        },
+                        "parent_id": str(region_info["id"]),
+                        "split_depth": recursion_depth + 1,
+                        "type": "テキスト"
+                    })
+                
+                # 分割結果を視覚化
+                vis_img = roi.copy()
+                for r in regions:
+                    rx = r["position"]["x"]
+                    ry = r["position"]["y"]
+                    rw = r["position"]["width"]
+                    rh = r["position"]["height"]
+                    color = (0, 255, 0) if r["type"] == "テキスト" else (0, 0, 255)
+                    cv2.rectangle(vis_img, (rx, ry), (rx+rw, ry+rh), color, 2)
+                
+                # 可視化画像を保存
+                vis_path = os.path.join(TMP_DIR, f"mixed_split_{region_info['id']}.png")
+                cv2.imwrite(vis_path, vis_img)
+                
+                # 分割結果を返す準備
+                logger.info(f"混在コンテンツの分割により {len(regions)} 個の領域を検出")
+                
+                # パスを設定
+                for i, r in enumerate(regions):
+                    sub_roi = roi[r["position"]["y"]:r["position"]["y"]+r["position"]["height"], 
+                                r["position"]["x"]:r["position"]["x"]+r["position"]["width"]]
+                    sub_path = os.path.join(TMP_DIR, f"sub_region_{r['id']}.png")
+                    cv2.imwrite(sub_path, sub_roi)
+                    r["path"] = sub_path
+                
+                # 最後に親領域の座標を加算して返す
+                for region in regions:
+                    region.update({
+                        "position": {
+                            "x": region["position"]["x"] + x1,
+                            "y": region["position"]["y"] + y1,
+                            "width": region["position"]["width"],
+                            "height": region["position"]["height"]
+                        }
+                    })
+                
+                return regions
+        
+        # 特殊な分割処理を適用しない場合、または特殊分割が失敗した場合は標準の分割処理を使用
+        # 連結成分分析を使用して分割（再帰深度を渡す）
         sub_regions_result = analyze_image_content_with_connected_components(
-            temp_roi_path, 
-            f"{file_name}_sub_{region_info['id']}", 
+            temp_roi_path,
+            f"{file_name}_sub_{region_info['id']}",
             f"{page_num}_{region_info['id']}",
-            is_subsplit=True  # 再分割時は細かい分割を行う
+            is_subsplit=True,  # 分割モードを有効化
+            recursion_depth=recursion_depth  # 現在の再帰深度を渡す
         )
         
-        if "error" in sub_regions_result:
-            logger.error(f"サブ領域の分析でエラーが発生: {sub_regions_result['error']}")
+        # 分割に失敗した場合は元の領域を返す
+        if "error" in sub_regions_result or len(sub_regions_result["figures"]) <= 1:
+            logger.info(f"領域 {region_info['id']} は分割できませんでした")
             return [region_info]
 
         # サブ領域の座標は相対座標のまま保持
         logger.info(f"検出されたサブ領域の数: {len(sub_regions_result['figures'])}")
+        
+        # サブ領域に一意のIDを割り当て（親のIDを含む形式）
+        parent_id = str(region_info["id"])
+        for i, region in enumerate(sub_regions_result["figures"]):
+            # 子領域のIDを親領域のIDと関連付けて一意にする
+            region["id"] = f"{parent_id}_{i+1}"
+            # 親領域のIDを記録
+            region["parent_id"] = parent_id
+            # 分割深度を記録
+            region["split_depth"] = recursion_depth + 1
         
         # サブ領域のLLM分析を実行（相対座標のまま）
         sub_regions_for_llm = [
@@ -1758,7 +2213,33 @@ def split_region_using_existing_process(region_info, original_image, file_name, 
         logger.info("LLM分析結果:")
         logger.info(f"sub_llm_analysis: {json.dumps(sub_llm_analysis, indent=2, ensure_ascii=False)}")
 
-        if "error" not in sub_llm_analysis:
+        # 分析結果がエラーでない場合
+        if "error" not in sub_llm_analysis and "regions" in sub_llm_analysis:
+            # サブ領域の分析結果を統合
+            analyzed_regions = {r["id"]: r for r in sub_llm_analysis["regions"]}
+            
+            # 分析結果を各領域に適用
+            for region in sub_regions_result["figures"]:
+                region_id = str(region["id"])
+                if region_id in analyzed_regions:
+                    # 分析結果から必要な情報を取得
+                    analysis = analyzed_regions[region_id]
+                    
+                    # typeプロパティを確実に設定（見つからない場合はデフォルト値を使用）
+                    region["type"] = analysis.get("type", "unknown")
+                    region["content"] = analysis.get("content", "")
+                    region["needs_split"] = analysis.get("needs_split", False)
+                    
+                    # content_typesがあれば設定
+                    if "content_types" in analysis:
+                        region["content_types"] = analysis["content_types"]
+                else:
+                    # 分析結果がない場合はデフォルト値を設定
+                    region["type"] = "unknown"
+                    region["content"] = ""
+                    region["needs_split"] = False
+                    region["content_types"] = [region["type"]]
+            
             # サブ領域に対してマージを実行（親領域の情報を渡す）
             logger.info("サブ領域のマージ処理を開始")
             
@@ -1779,16 +2260,24 @@ def split_region_using_existing_process(region_info, original_image, file_name, 
 
             if "error" not in merged_result:
                 logger.info(f"サブ領域のマージ完了: {len(merged_result['figures'])} 領域")
+                # マージ結果にも親のIDと深さの情報を設定
+                for merged_region in merged_result["figures"]:
+                    if "parent_id" not in merged_region:
+                        merged_region["parent_id"] = parent_id
+                    if "split_depth" not in merged_region:
+                        merged_region["split_depth"] = recursion_depth + 1
                 return merged_result["figures"]
-
+        
         # エラーが発生した場合やマージ提案がない場合は、元の分割結果を返す
         logger.info("マージ処理をスキップし、元の分割結果を返します")
         
         # 最後に親領域の座標を加算して返す
         for region in sub_regions_result["figures"]:
+            # typeプロパティが設定されていない場合はデフォルト値を設定
+            if "type" not in region:
+                region["type"] = "unknown"
+            
             region.update({
-                "parent_id": region_info["id"],
-                "split_depth": recursion_depth + 1,
                 "position": {
                     "x": region["position"]["x"] + x1,
                     "y": region["position"]["y"] + y1,
@@ -1800,6 +2289,7 @@ def split_region_using_existing_process(region_info, original_image, file_name, 
         
     except Exception as e:
         logger.error(f"領域分割処理でエラーが発生: {str(e)}")
+        traceback.print_exc()  # スタックトレースを出力
         return [region_info]
 
 def process_regions_with_split(analysis_result, llm_analysis, file_name, page_num, original_image):
@@ -1810,42 +2300,192 @@ def process_regions_with_split(analysis_result, llm_analysis, file_name, page_nu
         # 1. まず領域の統合を実行
         merged_result = merge_regions(analysis_result, llm_analysis, file_name, page_num)
         
-        # st.json(merged_result)
-        # st.json(llm_analysis)
-        # 2. 分割が必要な領域を処理
-        final_regions = []
+        # 最大分割深度を設定（少し控えめに設定）
+        max_split_depth = 2
+        
+        # 分割優先度の高い領域（テキストとグラフ/表/画像が混在する領域）を識別
+        priority_regions = []
+        normal_regions = []
+        
         for region in merged_result["figures"]:
             region_analysis = next(
-                (r for r in llm_analysis["regions"] if r["id"] == region["id"]),
+                (r for r in llm_analysis["regions"] if r["id"] == str(region["id"])),
                 None
             )
-            # st.write("region_analysis")
-            # st.json(region_analysis)
+            
             if region_analysis and region_analysis.get("needs_split", False):
-                logger.info(f"領域 {region['id']} の分割を開始")
-                # 領域を分割
-                split_regions = split_region_using_existing_process(
-                    region,
-                    original_image,
-                    file_name,
-                    page_num
-                )
-                final_regions.extend(split_regions)
+                # content_typesが存在し、テキストと他の要素が混在している場合は優先的に分割
+                mixed_content = False
+                if "content_types" in region_analysis:
+                    content_types = region_analysis["content_types"]
+                    if "テキスト" in content_types and any(t in content_types for t in ["グラフ", "表", "イメージ", "図"]):
+                        mixed_content = True
+                
+                # 分割理由にテキストとグラフ/表/画像の混在が明示されている場合も優先
+                split_reason = region_analysis.get("split_reason", "").lower()
+                mixed_keywords = ["テキスト", "グラフ", "表", "混在", "混合"]
+                reason_indicates_mixed = any(keyword in split_reason for keyword in mixed_keywords)
+                
+                if mixed_content or reason_indicates_mixed:
+                    # 優先度の高い領域として登録
+                    region["is_mixed_content"] = True
+                    region["content_types"] = region_analysis.get("content_types", [region_analysis.get("type", "unknown")])
+                    priority_regions.append(region)
+                else:
+                    # 通常の分割対象領域
+                    region["is_mixed_content"] = False
+                    normal_regions.append(region)
             else:
-                final_regions.append(region)
+                # 分割が不要な領域
+                if region_analysis and "type" in region_analysis:
+                    region["type"] = region_analysis["type"]
+                elif "type" not in region:
+                    region["type"] = "unknown"
+                
+                normal_regions.append(region)
         
-        # st.write("final_regions")
-        # st.json(final_regions)
-        # 3. 結果を更新
+        # 段階的に分割を実行（優先領域からスタート）
+        logger.info(f"優先的に分割する混在コンテンツ領域数: {len(priority_regions)}")
+        
+        final_regions = []
+        
+        # 1. まず優先的に分割する領域を処理
+        for region in priority_regions:
+            logger.info(f"優先領域 {region['id']} の分割を開始")
+            
+            # 領域の種類を格納
+            if "content_types" not in region and "content_types" in llm_analysis["regions"][0]:
+                region_analysis = next(
+                    (r for r in llm_analysis["regions"] if r["id"] == str(region["id"])),
+                    None
+                )
+                if region_analysis and "content_types" in region_analysis:
+                    region["content_types"] = region_analysis["content_types"]
+            
+            # 強化された分割処理で領域を分割
+            split_regions = split_region_using_existing_process(
+                region,
+                original_image,
+                file_name,
+                page_num,
+                recursion_depth=0,
+                max_depth=max_split_depth
+            )
+            
+            # 分割結果を最終リストに追加
+            final_regions.extend(split_regions)
+        
+        # 2. 次に通常の分割処理を段階的に実行
+        for current_depth in range(max_split_depth + 1):
+            logger.info(f"通常分割処理: 深度 {current_depth} を開始")
+            depth_regions = []
+            
+            # 現在の深度の領域を処理
+            for region in normal_regions:
+                # 既に指定された深度まで分割済みの領域はスキップ
+                if region.get("split_depth", 0) > current_depth:
+                    final_regions.append(region)
+                    continue
+                
+                region_analysis = next(
+                    (r for r in llm_analysis["regions"] if r["id"] == str(region["id"])),
+                    None
+                )
+                
+                # 分割が必要な領域を処理（現在の深度のものだけ）
+                if region_analysis and region_analysis.get("needs_split", False):
+                    logger.info(f"領域 {region['id']} の分割を開始（深度: {current_depth}）")
+                    
+                    # 深度を指定して領域を分割
+                    split_regions = split_region_using_existing_process(
+                        region,
+                        original_image,
+                        file_name,
+                        page_num,
+                        recursion_depth=current_depth,
+                        max_depth=current_depth + 1  # 1段階だけ分割
+                    )
+                    depth_regions.extend(split_regions)
+                else:
+                    # 分割しない場合もtypeプロパティが確実に設定されるようにする
+                    if region_analysis and "type" in region_analysis:
+                        region["type"] = region_analysis["type"]
+                    elif "type" not in region:
+                        region["type"] = "unknown"
+                    
+                    depth_regions.append(region)
+            
+            # 各深度で処理された領域を次のサイクルに渡す
+            normal_regions = depth_regions
+            
+            # 最終サイクルでfinal_regionsに追加
+            if current_depth == max_split_depth:
+                final_regions.extend(depth_regions)
+            
+            # 現在の深度の分割結果に対する領域分析を実行
+            if current_depth < max_split_depth and depth_regions:
+                regions_for_llm = [
+                    {
+                        "id": str(region["id"]),
+                        "position": region["position"],
+                        "path": region.get("path", "")
+                    } 
+                    for region in depth_regions
+                    if "path" in region
+                ]
+                
+                if regions_for_llm:
+                    # 分割された領域のGPT分析を実行（分割が必要かを判断）
+                    new_llm_analysis = analyze_regions_with_llm(
+                        regions_for_llm,
+                        file_name,
+                        page_num
+                    )
+                    
+                    # 新しい分析結果を使用
+                    if not isinstance(new_llm_analysis, dict):
+                        try:
+                            new_llm_analysis = json.loads(new_llm_analysis)
+                        except:
+                            logger.error("LLM分析結果のJSONパースに失敗")
+                            continue
+                    
+                    if isinstance(new_llm_analysis, dict) and "regions" in new_llm_analysis:
+                        # 分析結果をdictに変換して効率的に参照できるようにする
+                        analyzed_regions = {r["id"]: r for r in new_llm_analysis["regions"]}
+                        
+                        # 分析結果を各領域に適用
+                        for region in depth_regions:
+                            region_id = str(region["id"])
+                            if region_id in analyzed_regions:
+                                analysis = analyzed_regions[region_id]
+                                # typeプロパティを確実に設定
+                                region["type"] = analysis.get("type", region.get("type", "unknown"))
+                                region["content"] = analysis.get("content", region.get("content", ""))
+                                region["needs_split"] = analysis.get("needs_split", False)
+                                if "content_types" in analysis:
+                                    region["content_types"] = analysis["content_types"]
+                        
+                        # 次の分割サイクルのために更新された分析結果を使用
+                        llm_analysis = new_llm_analysis
+        
+        # 最終的な分析結果のチェック
+        for region in final_regions:
+            if "type" not in region or not region["type"] or region["type"] == "unknown":
+                logger.warning(f"領域 {region['id']} のtypeが未設定または不明です。デフォルト値を設定します。")
+                region["type"] = "text"  # デフォルトタイプをtextに設定
+        
+        # 最終結果を設定
         merged_result["figures"] = final_regions
         
-        # 4. 結果の可視化
+        # 結果の可視化
         visualize_final_regions(original_image, final_regions, file_name, page_num)
         
         return merged_result
         
     except Exception as e:
         logger.error(f"領域処理でエラーが発生: {str(e)}")
+        traceback.print_exc()  # スタックトレースを出力
         return analysis_result
 
 def visualize_final_regions(original_image, final_regions, file_name, page_num):
