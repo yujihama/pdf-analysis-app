@@ -35,4 +35,7 @@ env/
 tmp/
 *.log
 messages.txt
-.env 
+.env
+*.csv
+ 
+ 
