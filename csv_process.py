@@ -177,6 +177,67 @@ def process_all_chunks(csv_data, prompt_template, max_tokens, filter_key=None, f
         st.error("CSVファイルには少なくとも1つのカラムが必要です。")
         return [], [], None
     
+    # 入力テキストがJSON形式かどうかを確認し、JSONキーを抽出
+    input_json_keys = set()
+    input_jsons = []
+    
+    # JSONパース処理のデバッグ情報
+    json_success_count = 0
+    json_error_count = 0
+    
+    # 入力データとパース結果のデバッグ表示用
+    debug_data = []
+    
+    for i, row in enumerate(csv_data[column_name]):
+        try:
+            # JSONとして解析
+            row_str = str(row).strip()
+            
+            # デバッグ情報を出力
+            logger.info(f"行 {i+1} の元データ: {row_str[:100]}...")
+            
+            # JSONとして解析
+            row_json = json.loads(row_str)
+            input_jsons.append(row_json)
+            
+            # JSONキーを収集
+            for key in row_json.keys():
+                input_json_keys.add(key)
+            
+            # デバッグ用情報の保存
+            debug_data.append({"行": i+1, "状態": "成功", "キー": list(row_json.keys())})
+            
+            # デバッグログ
+            json_success_count += 1
+            logger.info(f"行 {i+1}: JSONとして解析成功: キー={list(row_json.keys())}")
+        except json.JSONDecodeError as e:
+            logger.warning(f"行 {i+1}: JSONパースエラー: {str(e)}")
+            logger.warning(f"問題のデータ: {row_str}")
+            input_jsons.append(None)
+            debug_data.append({"行": i+1, "状態": "失敗", "エラー": str(e)})
+            json_error_count += 1
+        except Exception as e:
+            logger.error(f"行 {i+1}: 予期せぬエラー: {str(e)}")
+            input_jsons.append(None)
+            debug_data.append({"行": i+1, "状態": "エラー", "種類": str(type(e)), "詳細": str(e)})
+            json_error_count += 1
+    
+    # JSON解析の結果を表示
+    logger.info(f"JSON解析成功: {json_success_count}行, 失敗: {json_error_count}行")
+    
+    # デバッグ用のデータフレーム
+    debug_df = pd.DataFrame(debug_data)
+    if len(debug_df) > 0:
+        st.expander("JSON解析詳細（デバッグ情報）", expanded=False).dataframe(debug_df)
+    
+    # 入力テキストのJSONキーをセッションに保存
+    if input_json_keys:
+        st.session_state.input_json_keys = list(input_json_keys)
+        logger.info(f"検出されたJSONキー: {st.session_state.input_json_keys}")
+    else:
+        st.session_state.input_json_keys = []
+        logger.warning("JSONキーが検出されませんでした")
+    
     # 処理の進捗状況を表示
     for i, row in enumerate(csv_data[column_name]):
         progress_percent = (i + 1) / len(csv_data)
@@ -211,26 +272,42 @@ def process_all_chunks(csv_data, prompt_template, max_tokens, filter_key=None, f
     result_df = pd.DataFrame({
         'input_text': csv_data[column_name],
         'response': results,
-        'filtered': [i in filtered_indices for i in range(len(results))]
+        'filtered': [i in filtered_indices for i in range(len(results))],
+        'input_json': input_jsons
     })
     
-    return results, filtered_results, result_df
+    return results, filtered_results, result_df, input_jsons
 
-def integrate_responses(responses, integration_prompt):
+def integrate_responses(responses, integration_prompt, input_jsons=None, append_key=None):
     """
     全回答を統合するプロンプトを実行
     
     Args:
         responses: 各チャンクの回答のリスト
         integration_prompt: 統合用のプロンプト
+        input_jsons: 入力テキストのJSONパース結果のリスト
+        append_key: プロンプトに付加するJSONキー（オプション）
     
     Returns:
-        統合された回答
+        統合された回答とLLMに送信されたプロンプトのタプル
     """
-    # 全回答を1つの文字列にまとめる
+    # 全回答を1つの文字列にまとめる（各回答の前にJSONキー情報を付与）
     all_responses_text = ""
+    
+    # 回答ごとに処理
     for i, response in enumerate(responses):
-        all_responses_text += f"\n\n===== 回答 {i+1} =====\n{response}"
+        all_responses_text += f"\n\n===== 引用箇所 {i+1} ====="
+        
+        # 入力テキストの選択されたJSONキーの情報を抽出して追加
+        if append_key and input_jsons and i < len(input_jsons):
+            json_obj = input_jsons[i]
+            if json_obj and append_key in json_obj:
+                key_value = json_obj[append_key]
+                key_info = json.dumps({append_key: key_value}, ensure_ascii=False, indent=2)
+                all_responses_text += f"\n【引用箇所のメタデータ】:\n```\n{key_info}\n```"
+        
+        # 回答テキストを追加
+        all_responses_text += f"\n【引用内容】:\n{response}"
     
     # 統合プロンプトを作成
     full_prompt = f"{integration_prompt}\n\n引用文書:\n```\n{all_responses_text}\n```"
@@ -238,7 +315,8 @@ def integrate_responses(responses, integration_prompt):
     # GPTを呼び出して統合回答を生成
     integrated_response = call_gpt(full_prompt, max_tokens=2000, model="gpt-4o")
     
-    return integrated_response
+    # 統合回答と統合プロンプトを返す
+    return integrated_response, full_prompt
 
 def main():
     st.title("Map Reduce")    
@@ -253,8 +331,12 @@ def main():
         st.session_state.result_df = None
     if 'integrated_response' not in st.session_state:
         st.session_state.integrated_response = None
+    if 'integration_prompt' not in st.session_state:
+        st.session_state.integration_prompt = None
     if 'json_keys' not in st.session_state:
         st.session_state.json_keys = []
+    if 'input_json_keys' not in st.session_state:
+        st.session_state.input_json_keys = []
     if 'just_filtered' not in st.session_state:
         st.session_state.just_filtered = False
     if 'filter_applied' not in st.session_state:
@@ -377,19 +459,54 @@ def main():
     if uploaded_file is not None:
         # CSVファイルの読み込み
         try:
-            df = pd.read_csv(uploaded_file)
+            logger.info(f"CSVファイルの読み込みを開始: {uploaded_file.name}")
             
-            # 1カラム目のみを使用する
+            # テキストとして読み込み
+            content = uploaded_file.read()
+            try:
+                # まずUTF-8で試す
+                content_str = content.decode('utf-8')
+                logger.info("UTF-8エンコードでデコード成功")
+            except UnicodeDecodeError:
+                # UTF-8で失敗した場合はCP932（日本語Windows）で試す
+                content_str = content.decode('cp932')
+                logger.info("CP932エンコードでデコード成功")
+            
+            # 行ごとに分割
+            lines = content_str.strip().split('\n')
+            if len(lines) <= 1:
+                st.error("CSVファイルに十分なデータがありません。")
+                st.stop()
+                
+            # ヘッダー行を取得
+            header = lines[0].strip()
+            logger.info(f"ヘッダー行: {header}")
+            
+            # データ行を取得
+            data_lines = [line.strip() for line in lines[1:] if line.strip()]
+            logger.info(f"データ行数: {len(data_lines)}")
+            
+            # カスタムDataFrameを作成
+            data = {header: data_lines}
+            df = pd.DataFrame(data)
+            
+            logger.info(f"CSVファイルの読み込み完了: {len(df)}行, カラム: {df.columns.tolist()}")
+            
+            # カラム名を取得（ヘッダー）
             if len(df.columns) >= 1:
                 column_name = df.columns[0]
                 st.write(f"CSVファイルを読み込みました。行数: {len(df)}")
                 st.write("CSVプレビュー (1カラム目のみ使用):")
                 
-                # プレビューの表示（1カラム目のみ）
-                preview_df = pd.DataFrame({column_name: df[column_name]})
-                st.dataframe(preview_df.head())
+                # カラムの内容をログに出力（最初の3行）
+                for i, row in enumerate(df[column_name][:3]):
+                    logger.info(f"行 {i+1}: {row[:100]}..." if len(str(row)) > 100 else f"行 {i+1}: {row}")
+                
+                # プレビューの表示
+                st.dataframe(df.head())
             else:
                 st.error("CSVファイルには少なくとも1つのカラムが必要です。")
+                logger.error("CSVファイルにカラムがありません")
                 st.stop()
             
             # プロンプト入力欄
@@ -418,7 +535,7 @@ def main():
                     filter_value_param = st.session_state.get("current_filter_value") if use_filter else None
                     
                     # 各チャンクを処理
-                    responses, filtered_responses, result_df = process_all_chunks(
+                    responses, filtered_responses, result_df, input_jsons = process_all_chunks(
                         df, prompt1, max_tokens, filter_key_param, filter_value_param
                     )
                     
@@ -477,6 +594,44 @@ def main():
                 
                 # 処理済みで、回答統合プロンプトが入力されている場合は統合ボタンを表示
                 if st.session_state.processed and prompt2.strip():
+                    # 統合時に付加するJSONキー選択UI
+                    st.subheader("統合時に付加するJSONキー設定")
+                    
+                    # 入力テキストがJSONとして解析可能かどうかを表示
+                    if 'input_json_keys' in st.session_state and st.session_state.input_json_keys:
+                        st.success("入力テキストがJSONとして解析できました！以下のキーが利用可能です。")
+                        use_append_key = st.checkbox("入力テキストのJSONキーの情報を統合時に付加する", value=False)
+                        
+                        append_key_param = None
+                        if use_append_key:
+                            append_key_param = st.selectbox(
+                                "統合時に付加する入力テキストのJSONキー", 
+                                options=st.session_state.input_json_keys,
+                                key="append_key"
+                            )
+                            
+                            # キーの情報プレビュー
+                            if append_key_param:
+                                preview_data = {}
+                                count = 0
+                                for i, json_obj in enumerate(st.session_state.result_df['input_json'][:3]):  # 最初の3つだけプレビュー
+                                    if json_obj and append_key_param in json_obj:
+                                        chunk_key = f"チャンク{i+1}"
+                                        preview_data[chunk_key] = json_obj[append_key_param]
+                                        count += 1
+                                        if count >= 3:  # 最大3つまで表示
+                                            break
+                                        
+                                if preview_data:
+                                    st.info("選択されたキーの情報例:")
+                                    st.json(preview_data)
+                                else:
+                                    st.warning("選択されたキーの情報が見つかりませんでした")
+                    else:
+                        st.warning("入力テキストはJSONとして解析できませんでした。JSONキーの付加機能は利用できません。")
+                        use_append_key = False
+                        append_key_param = None
+                    
                     if st.button("回答を統合"):
                         with st.spinner("回答を統合中..."):
                             # フィルタリングされた結果を使用して統合
@@ -485,12 +640,36 @@ def main():
                             if not responses_to_integrate:
                                 st.warning("フィルター条件に一致する回答がありません。フィルタリング条件を見直すか、フィルタリングを無効にしてください。")
                             else:
-                                integrated_response = integrate_responses(responses_to_integrate, prompt2)
+                                # 使用するキーを決定
+                                key_to_append = append_key_param if use_append_key else None
+                                
+                                # フィルタリングされた結果に対応するinput_jsonを抽出
+                                if use_filter:
+                                    # フィルタリング後のインデックスを取得
+                                    filtered_indices = [i for i, filtered in enumerate(st.session_state.result_df['filtered']) if filtered]
+                                    # そのインデックスに対応するinput_jsonを取得
+                                    filtered_input_jsons = [st.session_state.result_df['input_json'].iloc[i] for i in filtered_indices]
+                                    integrated_response, integration_prompt = integrate_responses(responses_to_integrate, prompt2, filtered_input_jsons, key_to_append)
+                                else:
+                                    integrated_response, integration_prompt = integrate_responses(responses_to_integrate, prompt2, st.session_state.result_df['input_json'].tolist(), key_to_append)
+                                
                                 st.session_state.integrated_response = integrated_response
+                                st.session_state.integration_prompt = integration_prompt
                 
                 # 統合回答がある場合は表示
                 if st.session_state.integrated_response:
                     st.subheader("統合回答")
+                    
+                    # 付加したキー情報の説明を表示
+                    if 'append_key' in st.session_state and st.session_state.append_key:
+                        st.info(f"入力テキストの選択されたJSONキー「{st.session_state.append_key}」の情報が統合時に付加されました。")
+                    
+                    # 統合プロンプトの表示オプション
+                    show_prompt = st.checkbox("統合時にLLMへ送信したプロンプトを表示", value=False)
+                    if show_prompt and 'integration_prompt' in st.session_state:
+                        st.subheader("LLMへ送信したプロンプト")
+                        st.text_area("統合プロンプト", st.session_state.integration_prompt, height=300)
+                    
                     st.write(st.session_state.integrated_response)
                     
                     # 統合回答のダウンロードボタン
@@ -500,6 +679,16 @@ def main():
                         file_name="integrated_response.txt",
                         mime="text/plain"
                     )
+                    
+                    # 統合プロンプトのダウンロードボタン
+                    if 'integration_prompt' in st.session_state:
+                        st.download_button(
+                            label="統合プロンプトをテキストファイルでダウンロード",
+                            data=st.session_state.integration_prompt,
+                            file_name="integration_prompt.txt",
+                            mime="text/plain",
+                            key="download_prompt"
+                        )
         
         except Exception as e:
             st.error(f"エラーが発生しました: {str(e)}")
